@@ -28,6 +28,23 @@ overflow:hidden;
 z-index:999999;
 }
 
+#graphLab{
+position:fixed;
+top:120px;
+left:560px;
+width:420px;
+background:#1e1e1e;
+border-radius:12px;
+font-family:Arial;
+box-shadow:0 20px 40px rgba(0,0,0,.5);
+resize:both;
+overflow:hidden;
+z-index:999998;
+display:none;
+}
+
+#graphLab.open{display:block;}
+
 #header{
 background:#2a2a2a;
 color:white;
@@ -36,6 +53,35 @@ text-align:center;
 cursor:move;
 font-weight:bold;
 }
+
+#graphHeader{
+background:#2a2a2a;
+color:white;
+padding:10px;
+text-align:center;
+cursor:move;
+font-weight:bold;
+}
+
+#graphControls{
+display:flex;
+gap:8px;
+padding:8px;
+background:#1a1a1a;
+}
+
+.graphBtn{
+flex:1;
+padding:8px;
+border:none;
+border-radius:6px;
+background:#2c2c2c;
+color:white;
+cursor:pointer;
+}
+
+.graphBtn.active,
+.graphBtn:hover{background:#3f3f3f}
 
 #display{
 width:calc(100% - 20px);
@@ -102,15 +148,11 @@ cursor:pointer;
 
 
 .graphArea{
-height:0;
-overflow:hidden;
-opacity:0;
-transition:height .35s ease, opacity .35s ease;
+display:none;
 }
 
 .graphArea.open{
-height:260px;
-opacity:1;
+display:block;
 }
 
 canvas{
@@ -150,6 +192,18 @@ padding:8px;
 
 <div id="buttons"></div>
 
+<div id="history"></div>
+
+</div>
+
+<div id="graphLab">
+<div id="graphHeader">Graph Lab</div>
+<div id="graphControls">
+<button class="graphBtn" id="show2D">2D</button>
+<button class="graphBtn" id="show3D">3D</button>
+<button class="graphBtn" id="hideGraph">Close</button>
+</div>
+
 <div id="graph2D" class="graphArea">
 <canvas id="canvas2D"></canvas>
 </div>
@@ -157,8 +211,6 @@ padding:8px;
 <div id="graph3D" class="graphArea">
 <canvas id="canvas3D"></canvas>
 </div>
-
-<div id="history"></div>
 
 `;
 
@@ -170,6 +222,12 @@ padding:8px;
 
    const canvas3D = document.getElementById("canvas3D");
    const ctx3D = canvas3D.getContext("2d");
+
+   const graphLab = document.getElementById("graphLab");
+   const graph2D = document.getElementById("graph2D");
+   const graph3D = document.getElementById("graph3D");
+   const show2DButton = document.getElementById("show2D");
+   const show3DButton = document.getElementById("show3D");
 
    const historyBox = document.getElementById("history");
 
@@ -220,20 +278,32 @@ padding:8px;
 
    }
 
+   function activateGraph(mode) {
+      show2DButton.classList.toggle("active", mode === "2d");
+      show3DButton.classList.toggle("active", mode === "3d");
+   }
+
    function open2D() {
-      document.getElementById("graph3D").classList.remove("open");
-      document.getElementById("graph2D").classList.add("open");
+      graphLab.classList.add("open");
+      graph3D.classList.remove("open");
+      graph2D.classList.add("open");
+      activateGraph("2d");
       draw2D();
    }
 
    function open3D() {
-      document.getElementById("graph2D").classList.remove("open");
-      document.getElementById("graph3D").classList.add("open");
+      graphLab.classList.add("open");
+      graph2D.classList.remove("open");
+      graph3D.classList.add("open");
+      activateGraph("3d");
       draw3D(display.value);
    }
 
    function closeGraphs() {
-      document.querySelectorAll(".graphArea").forEach(g => g.classList.remove("open"));
+      graphLab.classList.remove("open");
+      graph2D.classList.remove("open");
+      graph3D.classList.remove("open");
+      activateGraph();
    }
 
    function drawGrid() {
@@ -401,6 +471,9 @@ padding:8px;
    document.getElementById("sciBtn").onclick = closeGraphs;
    document.getElementById("g2Btn").onclick = open2D;
    document.getElementById("g3Btn").onclick = () => open3D();
+   document.getElementById("show2D").onclick = open2D;
+   document.getElementById("show3D").onclick = open3D;
+   document.getElementById("hideGraph").onclick = closeGraphs;
 
    canvas2D.addEventListener("wheel", e => {
       e.preventDefault();
@@ -458,6 +531,7 @@ padding:8px;
    window.addEventListener("mouseup", () => drag3D = false);
 
    const header = document.getElementById("header");
+   const graphHeader = document.getElementById("graphHeader");
 
    let drag = false,
       ox, oy;
@@ -475,5 +549,22 @@ padding:8px;
    };
 
    document.onmouseup = () => drag = false;
+
+   let graphDrag = false,
+      graphOffsetX, graphOffsetY;
+
+   graphHeader.onmousedown = e => {
+      graphDrag = true;
+      graphOffsetX = e.clientX - graphLab.offsetLeft;
+      graphOffsetY = e.clientY - graphLab.offsetTop;
+   };
+
+   window.addEventListener("mousemove", e => {
+      if (!graphDrag) return;
+      graphLab.style.left = e.clientX - graphOffsetX + "px";
+      graphLab.style.top = e.clientY - graphOffsetY + "px";
+   });
+
+   window.addEventListener("mouseup", () => graphDrag = false);
 
 })();
