@@ -220,7 +220,7 @@ padding:8px;
 </div>
 <div id="sidebarHandle" title="Open sidebar"></div>
 
-<div id="header">Console Math Lab</div>
+<div id="header">Math Lab</div>
 
 <input id="display">
 
