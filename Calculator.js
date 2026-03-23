@@ -3,13 +3,12 @@
    if (document.getElementById("mathLab")) return;
 
    let functions2D = [];
-   let scale = 40;
    let offsetX = 0;
    let offsetY = 0;
-
-   let rotX = 0.8;
-   let rotY = 0.6;
-   let zoom3D = 40;
+   const GRAPH_MIN = -10;
+   const GRAPH_MAX = 10;
+   const GRAPH3D_MIN = -10;
+   const GRAPH3D_MAX = 10;
 
    const style = document.createElement("style");
    style.textContent = `
@@ -83,6 +82,9 @@ cursor:pointer;
 .graphBtn.active,
 .graphBtn:hover{background:#3f3f3f}
 
+.graphBtn.warn{background:#5a2d2d}
+.graphBtn.warn:hover{background:#7a3b3b}
+
 #display{
 width:calc(100% - 20px);
 margin:10px;
@@ -128,10 +130,41 @@ transition:left .35s ease;
 display:flex;
 flex-direction:column;
 padding-top:40px;
+z-index:1000000;
 }
 
-#mathLab:hover #sidebar{
+#mathLab.sidebar-open #sidebar{
 left:0;
+}
+
+#sidebarHandle{
+position:absolute;
+top:0;
+left:0;
+width:12px;
+height:100%;
+background:#151515;
+cursor:ew-resize;
+z-index:1000002;
+border-top-left-radius:12px;
+border-bottom-left-radius:12px;
+}
+
+#sidebarHandle:after{
+content:'';
+position:absolute;
+top:50%;
+left:50%;
+width:4px;
+height:56px;
+transform:translate(-50%,-50%);
+background:#2a2a2a;
+border-radius:3px;
+opacity:.9;
+}
+
+#mathLab.sidebar-open #sidebarHandle{
+background:#2a2a2a;
 }
 
 .sidebtn{
@@ -185,6 +218,7 @@ padding:8px;
 <button class="sidebtn" id="g2Btn">2D Graph</button>
 <button class="sidebtn" id="g3Btn">3D Graph</button>
 </div>
+<div id="sidebarHandle" title="Open sidebar"></div>
 
 <div id="header">Console Math Lab</div>
 
@@ -201,6 +235,8 @@ padding:8px;
 <div id="graphControls">
 <button class="graphBtn" id="show2D">2D</button>
 <button class="graphBtn" id="show3D">3D</button>
+<button class="graphBtn" id="undo2D">Undo 2D</button>
+<button class="graphBtn warn" id="clear2D">Clear 2D</button>
 <button class="graphBtn" id="hideGraph">Close</button>
 </div>
 
@@ -221,13 +257,28 @@ padding:8px;
    const ctx2D = canvas2D.getContext("2d");
 
    const canvas3D = document.getElementById("canvas3D");
-   const ctx3D = canvas3D.getContext("2d");
+   let threePromise = null;
+   let threeReady = false;
+   let threeRenderer = null;
+   let threeScene = null;
+   let threeCamera = null;
+   let threeSurfaceMesh = null;
+   let threeSurfaceMaterial = null;
+   const orbitState = { theta: 0.7, phi: 1.05, radius: 30 };
+   let orbitDragging = false;
+   let orbitStartX = 0;
+   let orbitStartY = 0;
 
    const graphLab = document.getElementById("graphLab");
    const graph2D = document.getElementById("graph2D");
    const graph3D = document.getElementById("graph3D");
    const show2DButton = document.getElementById("show2D");
    const show3DButton = document.getElementById("show3D");
+   const clear2DButton = document.getElementById("clear2D");
+   const undo2DButton = document.getElementById("undo2D");
+
+   const sidebarEl = document.getElementById("sidebar");
+   const sidebarHandle = document.getElementById("sidebarHandle");
 
    const historyBox = document.getElementById("history");
 
@@ -268,6 +319,13 @@ padding:8px;
 
    }
 
+   function normalizeGraphExpression(expr, variableName) {
+      const text = String(expr || "").trim();
+      if (!text) return "";
+      const assignment = new RegExp("^\\s*" + variableName + "\\s*=", "i");
+      return text.replace(assignment, "").trim();
+   }
+
    function evaluate(expr) {
 
       try {
@@ -296,7 +354,7 @@ padding:8px;
       graph2D.classList.remove("open");
       graph3D.classList.add("open");
       activateGraph("3d");
-      draw3D(display.value);
+      draw3D(display.value).catch(() => {});
    }
 
    function closeGraphs() {
@@ -312,111 +370,473 @@ padding:8px;
       canvas2D.height = 260;
 
       ctx2D.clearRect(0, 0, canvas2D.width, canvas2D.height);
+      ctx2D.fillStyle = "#fff";
+      ctx2D.fillRect(0, 0, canvas2D.width, canvas2D.height);
 
-      ctx2D.strokeStyle = "#ddd";
+      const marginLeft = 42;
+      const marginRight = 14;
+      const marginTop = 14;
+      const marginBottom = 28;
 
-      for (let x = 0; x < canvas2D.width; x += scale) {
+      const plotLeft = marginLeft;
+      const plotTop = marginTop;
+      const plotWidth = canvas2D.width - marginLeft - marginRight;
+      const plotHeight = canvas2D.height - marginTop - marginBottom;
+      const plotRight = plotLeft + plotWidth;
+      const plotBottom = plotTop + plotHeight;
+
+      const xSpan = GRAPH_MAX - GRAPH_MIN;
+      const ySpan = GRAPH_MAX - GRAPH_MIN;
+      const pixelsPerUnitX = plotWidth / xSpan;
+      const pixelsPerUnitY = plotHeight / ySpan;
+
+      const centerX = (plotLeft + plotRight) / 2 + offsetX;
+      const centerY = (plotTop + plotBottom) / 2 + offsetY;
+
+      function toScreenX(x) {
+         return centerX + x * pixelsPerUnitX;
+      }
+
+      function toScreenY(y) {
+         return centerY - y * pixelsPerUnitY;
+      }
+
+      function toMathX(px) {
+         return (px - centerX) / pixelsPerUnitX;
+      }
+
+      function toMathY(py) {
+         return (centerY - py) / pixelsPerUnitY;
+      }
+
+      // Bounded plotting rectangle.
+      ctx2D.strokeStyle = "#c8c8c8";
+      ctx2D.lineWidth = 1;
+      ctx2D.strokeRect(plotLeft, plotTop, plotWidth, plotHeight);
+
+      // Integer grid lines in the current visible bounded window.
+      const minGridX = Math.ceil(toMathX(plotLeft));
+      const maxGridX = Math.floor(toMathX(plotRight));
+      const minGridY = Math.ceil(toMathY(plotBottom));
+      const maxGridY = Math.floor(toMathY(plotTop));
+
+      ctx2D.strokeStyle = "#ececec";
+      for (let x = minGridX; x <= maxGridX; x++) {
+         const sx = toScreenX(x);
          ctx2D.beginPath();
-         ctx2D.moveTo(x + offsetX % scale, 0);
-         ctx2D.lineTo(x + offsetX % scale, canvas2D.height);
+         ctx2D.moveTo(sx, plotTop);
+         ctx2D.lineTo(sx, plotBottom);
          ctx2D.stroke();
       }
 
-      for (let y = 0; y < canvas2D.height; y += scale) {
+      for (let y = minGridY; y <= maxGridY; y++) {
+         const sy = toScreenY(y);
          ctx2D.beginPath();
-         ctx2D.moveTo(0, y + offsetY % scale);
-         ctx2D.lineTo(canvas2D.width, y + offsetY % scale);
+         ctx2D.moveTo(plotLeft, sy);
+         ctx2D.lineTo(plotRight, sy);
          ctx2D.stroke();
       }
 
+      // Axes.
+      const axisX = toScreenX(0);
+      const axisY = toScreenY(0);
+      const axisXVisible = axisX >= plotLeft && axisX <= plotRight;
+      const axisYVisible = axisY >= plotTop && axisY <= plotBottom;
+
+      ctx2D.strokeStyle = "#444";
+      ctx2D.lineWidth = 1.5;
+      if (axisXVisible) {
+         ctx2D.beginPath();
+         ctx2D.moveTo(axisX, plotTop);
+         ctx2D.lineTo(axisX, plotBottom);
+         ctx2D.stroke();
+      }
+
+      if (axisYVisible) {
+         ctx2D.beginPath();
+         ctx2D.moveTo(plotLeft, axisY);
+         ctx2D.lineTo(plotRight, axisY);
+         ctx2D.stroke();
+      }
+
+      // Tick marks and labels on visible axes.
+      ctx2D.fillStyle = "#333";
+      ctx2D.font = "11px Arial";
+      ctx2D.textAlign = "center";
+      ctx2D.textBaseline = "top";
+
+      if (axisYVisible) {
+         for (let x = minGridX; x <= maxGridX; x++) {
+            if (x === 0) continue;
+            const sx = toScreenX(x);
+            ctx2D.beginPath();
+            ctx2D.moveTo(sx, axisY - 4);
+            ctx2D.lineTo(sx, axisY + 4);
+            ctx2D.stroke();
+            ctx2D.fillText(String(x), sx, axisY + 6);
+         }
+      }
+
+      if (axisXVisible) {
+         ctx2D.textAlign = "left";
+         ctx2D.textBaseline = "middle";
+         for (let y = minGridY; y <= maxGridY; y++) {
+            if (y === 0) continue;
+            const sy = toScreenY(y);
+            ctx2D.beginPath();
+            ctx2D.moveTo(axisX - 4, sy);
+            ctx2D.lineTo(axisX + 4, sy);
+            ctx2D.stroke();
+            ctx2D.fillText(String(y), axisX + 6, sy);
+         }
+      }
+
+      // Axis labels.
+      ctx2D.fillStyle = "#222";
+      ctx2D.font = "bold 12px Arial";
+      if (axisYVisible) {
+         ctx2D.textAlign = "right";
+         ctx2D.textBaseline = "bottom";
+         ctx2D.fillText("x", plotRight - 4, axisY - 4);
+      }
+      if (axisXVisible) {
+         ctx2D.textAlign = "left";
+         ctx2D.textBaseline = "top";
+         ctx2D.fillText("y", axisX + 6, plotTop + 4);
+      }
+
+      return {
+         plotLeft,
+         plotTop,
+         plotRight,
+         plotBottom,
+         plotHeight,
+         toMathX,
+         toScreenY
+      };
    }
 
    function draw2D() {
 
-      drawGrid();
+      const view = drawGrid();
+
+      const discontinuityPx = view.plotHeight * 0.75;
+
+      ctx2D.save();
+      ctx2D.beginPath();
+      ctx2D.rect(
+         view.plotLeft,
+         view.plotTop,
+         view.plotRight - view.plotLeft,
+         view.plotBottom - view.plotTop
+      );
+      ctx2D.clip();
 
       functions2D.forEach(fn => {
 
          ctx2D.beginPath();
 
-         for (let px = 0; px < canvas2D.width; px++) {
+         let lastValid = false;
+         let lastPy = 0;
+         const parsedFn = parse(fn);
 
-            let x = (px - canvas2D.width / 2 - offsetX) / scale;
+         for (let px = Math.floor(view.plotLeft); px <= Math.ceil(view.plotRight); px++) {
 
-            let expr = parse(fn).replace(/x/g, "(" + x + ")");
+            let x = view.toMathX(px);
+
+            let expr = parsedFn.replace(/\bx\b/g, "(" + x + ")");
 
             let y;
 
             try {
                y = Function("return " + expr)();
             } catch {
+               lastValid = false;
                continue;
             }
 
-            let py = canvas2D.height / 2 - y * scale + offsetY;
+            y = Number(y);
+            if (!Number.isFinite(y)) {
+               lastValid = false;
+               continue;
+            }
 
-            if (px === 0) ctx2D.moveTo(px, py);
-            else ctx2D.lineTo(px, py);
+            let py = view.toScreenY(y);
+            if (!Number.isFinite(py)) {
+               lastValid = false;
+               continue;
+            }
+
+            if (!lastValid) {
+               ctx2D.moveTo(px, py);
+            } else if (Math.abs(py - lastPy) > discontinuityPx) {
+               // Likely discontinuity/asymptote: start a new segment.
+               ctx2D.moveTo(px, py);
+            } else {
+               ctx2D.lineTo(px, py);
+            }
+
+            lastPy = py;
+            lastValid = true;
 
          }
 
          ctx2D.strokeStyle = "red";
+         ctx2D.lineWidth = 2;
          ctx2D.stroke();
 
       });
 
+      ctx2D.restore();
    }
 
-   function project(x, y, z) {
+   
 
-      let cx = Math.cos(rotY);
-      let sx = Math.sin(rotY);
-      let cy = Math.cos(rotX);
-      let sy = Math.sin(rotX);
+function loadThree() {
 
-      let dx = cx * x - sx * z;
-      let dz = sx * x + cx * z;
+    // If already loaded, return it
+    if (window.THREE) return Promise.resolve(window.THREE);
+    if (threePromise) return threePromise;
 
-      let dy = cy * y - sy * dz;
+    // Dynamically import the module
+    threePromise = import("https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js")
+        .then(mod => {
+            window.THREE = mod;
+            return mod;
+        })
+        .catch(() => {
+            throw new Error("Failed to load Three.js module");
+        });
 
-      return {
-         x: canvas3D.width / 2 + dx * zoom3D,
-         y: canvas3D.height / 2 - dy * zoom3D
-      };
+    return threePromise;
+}
 
+   function updateThreeCamera() {
+      if (!threeCamera) return;
+      const sinPhi = Math.sin(orbitState.phi);
+      const cosPhi = Math.cos(orbitState.phi);
+      const sinTheta = Math.sin(orbitState.theta);
+      const cosTheta = Math.cos(orbitState.theta);
+
+      threeCamera.position.set(
+         orbitState.radius * sinPhi * cosTheta,
+         orbitState.radius * cosPhi,
+         orbitState.radius * sinPhi * sinTheta
+      );
+      threeCamera.lookAt(0, 0, 0);
    }
 
-   function draw3D(expr) {
+   function render3D() {
+      if (!threeRenderer || !threeScene || !threeCamera) return;
+      const w = canvas3D.clientWidth;
+      const h = canvas3D.clientHeight || 260;
+      threeRenderer.setSize(w, h, false);
+      threeCamera.aspect = w / h;
+      threeCamera.updateProjectionMatrix();
+      threeRenderer.render(threeScene, threeCamera);
+   }
 
-      canvas3D.width = canvas3D.clientWidth;
-      canvas3D.height = 260;
+   async function ensureThreeScene() {
+      if (threeReady) return;
+      const THREE = await loadThree();
 
-      ctx3D.clearRect(0, 0, canvas3D.width, canvas3D.height);
+      threeRenderer = new THREE.WebGLRenderer({
+         canvas: canvas3D,
+         antialias: true
+      });
+      threeRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      threeRenderer.setClearColor(0x101418, 1);
 
-      for (let x = -5; x < 5; x += 0.4) {
+      threeScene = new THREE.Scene();
+      threeScene.fog = new THREE.Fog(0x101418, 35, 90);
+      threeCamera = new THREE.PerspectiveCamera(50, 1, 0.1, 500);
+      updateThreeCamera();
 
-         for (let y = -5; y < 5; y += 0.4) {
+      threeScene.add(new THREE.AmbientLight(0xffffff, 0.38));
+      const dirLight = new THREE.DirectionalLight(0xffffff, 1.05);
+      dirLight.position.set(15, 20, 10);
+      threeScene.add(dirLight);
+      const fillLight = new THREE.DirectionalLight(0x9db4ff, 0.4);
+      fillLight.position.set(-12, 8, -10);
+      threeScene.add(fillLight);
 
-            let e = parse(expr)
-               .replace(/x/g, "(" + x + ")")
-               .replace(/y/g, "(" + y + ")");
+      const span = GRAPH3D_MAX - GRAPH3D_MIN;
+      const center = (GRAPH3D_MAX + GRAPH3D_MIN) / 2;
+      const box = new THREE.Box3Helper(
+         new THREE.Box3(
+            new THREE.Vector3(GRAPH3D_MIN, GRAPH3D_MIN, GRAPH3D_MIN),
+            new THREE.Vector3(GRAPH3D_MAX, GRAPH3D_MAX, GRAPH3D_MAX)
+         ),
+         0xb3b3b3
+      );
+      threeScene.add(box);
 
-            let z;
+      const xAxis = new THREE.BufferGeometry().setFromPoints([
+         new THREE.Vector3(GRAPH3D_MIN, 0, 0),
+         new THREE.Vector3(GRAPH3D_MAX, 0, 0)
+      ]);
+      const yAxis = new THREE.BufferGeometry().setFromPoints([
+         new THREE.Vector3(0, GRAPH3D_MIN, 0),
+         new THREE.Vector3(0, GRAPH3D_MAX, 0)
+      ]);
+      const zAxis = new THREE.BufferGeometry().setFromPoints([
+         new THREE.Vector3(0, 0, GRAPH3D_MIN),
+         new THREE.Vector3(0, 0, GRAPH3D_MAX)
+      ]);
+      threeScene.add(new THREE.Line(xAxis, new THREE.LineBasicMaterial({ color: 0xe53935 })));
+      threeScene.add(new THREE.Line(yAxis, new THREE.LineBasicMaterial({ color: 0x43a047 })));
+      threeScene.add(new THREE.Line(zAxis, new THREE.LineBasicMaterial({ color: 0x1e88e5 })));
 
-            try {
-               z = Function("return " + e)();
-            } catch {
-               continue;
-            }
-
-            let p = project(x, y, z);
-
-            ctx3D.fillRect(p.x, p.y, 2, 2);
-
-         }
-
+      const step = 2;
+      const tickSize = 0.25;
+      const tickMaterial = new THREE.LineBasicMaterial({ color: 0x777777 });
+      for (let t = GRAPH3D_MIN; t <= GRAPH3D_MAX; t += step) {
+         if (t === 0) continue;
+         const xTick = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(t, -tickSize, 0),
+            new THREE.Vector3(t, tickSize, 0)
+         ]);
+         const yTick = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(-tickSize, t, 0),
+            new THREE.Vector3(tickSize, t, 0)
+         ]);
+         const zTick = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(0, -tickSize, t),
+            new THREE.Vector3(0, tickSize, t)
+         ]);
+         threeScene.add(new THREE.Line(xTick, tickMaterial));
+         threeScene.add(new THREE.Line(yTick, tickMaterial));
+         threeScene.add(new THREE.Line(zTick, tickMaterial));
       }
 
+      const grid = new THREE.GridHelper(
+         GRAPH3D_MAX - GRAPH3D_MIN,
+         (GRAPH3D_MAX - GRAPH3D_MIN) / step,
+         0x6a6a6a,
+         0x3a3a3a
+      );
+      threeScene.add(grid);
+
+      const planeGeom = new THREE.PlaneGeometry(span, span, 10, 10);
+      const planeMat = new THREE.MeshBasicMaterial({
+         color: 0xdedede,
+         wireframe: true,
+         transparent: true,
+         opacity: 0.25
+      });
+      const plane = new THREE.Mesh(planeGeom, planeMat);
+      plane.rotation.x = -Math.PI / 2;
+      plane.position.set(center, 0, center);
+      threeScene.add(plane);
+
+      threeSurfaceMaterial = new THREE.MeshPhongMaterial({
+         color: 0x4da6ff,
+         side: THREE.DoubleSide,
+         shininess: 55,
+         transparent: true,
+         opacity: 0.92
+      });
+
+      canvas3D.addEventListener("mousedown", e => {
+         orbitDragging = true;
+         orbitStartX = e.clientX;
+         orbitStartY = e.clientY;
+      });
+
+      window.addEventListener("mousemove", e => {
+         if (!orbitDragging) return;
+         orbitState.theta -= (e.clientX - orbitStartX) * 0.01;
+         orbitState.phi += (e.clientY - orbitStartY) * 0.01;
+         orbitState.phi = Math.max(0.2, Math.min(Math.PI - 0.2, orbitState.phi));
+         orbitStartX = e.clientX;
+         orbitStartY = e.clientY;
+         updateThreeCamera();
+         render3D();
+      });
+
+      window.addEventListener("mouseup", () => {
+         orbitDragging = false;
+      });
+
+      threeReady = true;
+      render3D();
+   }
+
+   async function draw3D(expr) {
+      await ensureThreeScene();
+      const THREE = window.THREE || await loadThree();
+      if (!THREE || !threeScene) return;
+
+      if (threeSurfaceMesh) {
+         threeScene.remove(threeSurfaceMesh);
+         threeSurfaceMesh.geometry.dispose();
+         threeSurfaceMesh = null;
+      }
+
+      const segments = 70;
+      const size = segments + 1;
+      const positions = new Float32Array(size * size * 3);
+      const indices = [];
+      const cleanExpr = normalizeGraphExpression(expr, "z");
+      const parsed = parse(cleanExpr || "0");
+
+      let idx = 0;
+      for (let iy = 0; iy <= segments; iy++) {
+         const y = GRAPH3D_MIN + (iy / segments) * (GRAPH3D_MAX - GRAPH3D_MIN);
+         for (let ix = 0; ix <= segments; ix++) {
+            const x = GRAPH3D_MIN + (ix / segments) * (GRAPH3D_MAX - GRAPH3D_MIN);
+            let z = NaN;
+            try {
+               const e = parsed
+                  .replace(/\bx\b/g, "(" + x + ")")
+                  .replace(/\by\b/g, "(" + y + ")");
+               z = Number(Function("return " + e)());
+            } catch {
+               z = NaN;
+            }
+
+            // No clamp: out-of-range z -> NaN so triangles are skipped (avoids flat "lip" at bounds).
+            const height =
+               Number.isFinite(z) && z >= GRAPH3D_MIN && z <= GRAPH3D_MAX ? z : NaN;
+            positions[idx++] = x;
+            positions[idx++] = height;
+            positions[idx++] = y;
+         }
+      }
+
+      function validVertex(i) {
+         const yValue = positions[i * 3 + 1];
+         return Number.isFinite(yValue);
+      }
+
+      for (let iy = 0; iy < segments; iy++) {
+         for (let ix = 0; ix < segments; ix++) {
+            const a = iy * size + ix;
+            const b = a + 1;
+            const c = a + size;
+            const d = c + 1;
+            if (validVertex(a) && validVertex(b) && validVertex(c)) {
+               indices.push(a, c, b);
+            }
+            if (validVertex(b) && validVertex(c) && validVertex(d)) {
+               indices.push(b, c, d);
+            }
+         }
+      }
+
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      geom.setIndex(indices);
+      geom.computeVertexNormals();
+      threeSurfaceMesh = new THREE.Mesh(geom, threeSurfaceMaterial);
+      threeScene.add(threeSurfaceMesh);
+
+      const wire = new THREE.LineSegments(
+         new THREE.WireframeGeometry(geom),
+         new THREE.LineBasicMaterial({ color: 0x0f4b7a, transparent: true, opacity: 0.32 })
+      );
+      threeSurfaceMesh.add(wire);
+      render3D();
    }
 
    function handle(k) {
@@ -435,7 +855,9 @@ padding:8px;
       }
 
       if (k === "graph") {
-         functions2D.push(display.value);
+         const cleanExpr = normalizeGraphExpression(display.value, "y");
+         if (!cleanExpr) return;
+         functions2D.push(cleanExpr);
          open2D();
          return;
       }
@@ -473,14 +895,38 @@ padding:8px;
    document.getElementById("g3Btn").onclick = () => open3D();
    document.getElementById("show2D").onclick = open2D;
    document.getElementById("show3D").onclick = open3D;
+   clear2DButton.onclick = () => {
+      functions2D = [];
+      draw2D();
+   };
+   undo2DButton.onclick = () => {
+      functions2D.pop();
+      draw2D();
+   };
    document.getElementById("hideGraph").onclick = closeGraphs;
+
+   function setSidebarOpen(open) {
+      calc.classList.toggle("sidebar-open", open);
+   }
+
+   sidebarHandle.addEventListener("mouseenter", () => setSidebarOpen(true));
+   sidebarEl.addEventListener("mouseenter", () => setSidebarOpen(true));
+
+   sidebarHandle.addEventListener("mouseleave", e => {
+      const t = e.relatedTarget;
+      if (t && (sidebarEl.contains(t) || sidebarHandle.contains(t))) return;
+      setSidebarOpen(false);
+   });
+
+   sidebarEl.addEventListener("mouseleave", e => {
+      const t = e.relatedTarget;
+      if (t && (sidebarEl.contains(t) || sidebarHandle.contains(t))) return;
+      setSidebarOpen(false);
+   });
 
    canvas2D.addEventListener("wheel", e => {
       e.preventDefault();
-      scale += e.deltaY > 0 ? -2 : 2;
-      scale = Math.max(10, Math.min(100, scale));
-      draw2D();
-   });
+   }, { passive: false });
 
    let dragging = false,
       startX, startY;
@@ -505,30 +951,6 @@ padding:8px;
       draw2D();
 
    };
-
-   let drag3D = false;
-
-   canvas3D.onmousedown = e => {
-      drag3D = true;
-      startX = e.clientX;
-      startY = e.clientY;
-   };
-
-   window.addEventListener("mousemove", e => {
-
-      if (!drag3D) return;
-
-      rotY += (e.clientX - startX) * 0.01;
-      rotX += (e.clientY - startY) * 0.01;
-
-      startX = e.clientX;
-      startY = e.clientY;
-
-      draw3D(display.value);
-
-   });
-
-   window.addEventListener("mouseup", () => drag3D = false);
 
    const header = document.getElementById("header");
    const graphHeader = document.getElementById("graphHeader");
