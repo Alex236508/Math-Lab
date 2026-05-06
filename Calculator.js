@@ -249,14 +249,22 @@ padding:8px;
       document.getElementById("buttons").appendChild(b);
       b.onclick = () => handle(k);
    });
-
    function factorial(n) {
       let r = 1;
       for (let i = 1; i <= n; i++) r *= i;
       return r;
    }
-
+   function insertImplicitMultiplication(expr) {
+      return expr
+         .replace(/(\d)([a-zA-Z])/g, "$1*$2")
+         .replace(/([a-zA-Z])(\d)/g, "$1*$2")
+         .replace(/(\))(\()/g, "$1*$2")
+         .replace(/(\d)\(/g, "$1*(")
+         .replace(/\)([a-zA-Z])/g, ")*$1")
+         .replace(/([a-zA-Z])\(/g, "$1*(");
+   }
    function parse(expr) {
+      expr = insertImplicitMultiplication(expr);
       return expr
          .replace(/π/g, "Math.PI")
          .replace(/√/g, "Math.sqrt")
@@ -268,14 +276,12 @@ padding:8px;
          .replace(/\^/g, "**")
          .replace(/(\d+)!/g, (m, n) => factorial(Number(n)));
    }
-
    function normalizeGraphExpression(expr, variableName) {
       const text = String(expr || "").trim();
       if (!text) return "";
       const assignment = new RegExp("^\\s*" + variableName + "\\s*=", "i");
       return text.replace(assignment, "").trim();
    }
-
    function evaluate(expr) {
       try {
          return Function("return " + parse(expr))();
@@ -283,12 +289,10 @@ padding:8px;
          return "Error";
       }
    }
-
    function activateGraph(mode) {
       show2DButton.classList.toggle("active", mode === "2d");
       show3DButton.classList.toggle("active", mode === "3d");
    }
-
    function open2D() {
       graphLab.classList.add("open");
       graph3D.classList.remove("open");
@@ -296,7 +300,6 @@ padding:8px;
       activateGraph("2d");
       draw2D();
    }
-
    function open3D() {
       graphLab.classList.add("open");
       graph2D.classList.remove("open");
@@ -304,14 +307,12 @@ padding:8px;
       activateGraph("3d");
       draw3D(display.value).catch(() => {});
    }
-
    function closeGraphs() {
       graphLab.classList.remove("open");
       graph2D.classList.remove("open");
       graph3D.classList.remove("open");
       activateGraph();
    }
-
    function drawGrid() {
       canvas2D.width = canvas2D.clientWidth;
       canvas2D.height = 260;
@@ -334,19 +335,15 @@ padding:8px;
       const pixelsPerUnitY = plotHeight / ySpan;
       const centerX = (plotLeft + plotRight) / 2 + offsetX;
       const centerY = (plotTop + plotBottom) / 2 + offsetY;
-
       function toScreenX(x) {
          return centerX + x * pixelsPerUnitX;
       }
-
       function toScreenY(y) {
          return centerY - y * pixelsPerUnitY;
       }
-
       function toMathX(px) {
          return (px - centerX) / pixelsPerUnitX;
       }
-
       function toMathY(py) {
          return (centerY - py) / pixelsPerUnitY;
       }
@@ -445,7 +442,6 @@ padding:8px;
          toScreenY
       };
    }
-
    function draw2D() {
       const view = drawGrid();
       const discontinuityPx = view.plotHeight * 0.75;
@@ -500,7 +496,6 @@ padding:8px;
       });
       ctx2D.restore();
    }
-
    function loadThree() {
       // If already loaded, return it
       if (window.THREE) return Promise.resolve(window.THREE);
@@ -516,7 +511,6 @@ padding:8px;
          });
       return threePromise;
    }
-
    function updateThreeCamera() {
       if (!threeCamera) return;
       const sinPhi = Math.sin(orbitState.phi);
@@ -530,7 +524,6 @@ padding:8px;
       );
       threeCamera.lookAt(0, 0, 0);
    }
-
    function render3D() {
       if (!threeRenderer || !threeScene || !threeCamera) return;
       const w = canvas3D.clientWidth;
@@ -697,7 +690,6 @@ padding:8px;
             positions[idx++] = y;
          }
       }
-
       function validVertex(i) {
          const yValue = positions[i * 3 + 1];
          return Number.isFinite(yValue);
@@ -733,7 +725,6 @@ padding:8px;
       threeSurfaceMesh.add(wire);
       render3D();
    }
-
    function handle(k) {
       if (k === "C") {
          display.value = "";
@@ -771,7 +762,6 @@ padding:8px;
       }
       display.value += k;
    }
-
    function addHistory(e, r) {
       let d = document.createElement("div");
       d.textContent = e + " = " + r;
@@ -791,7 +781,6 @@ padding:8px;
       draw2D();
    };
    document.getElementById("hideGraph").onclick = closeGraphs;
-
    function setSidebarOpen(open) {
       calc.classList.toggle("sidebar-open", open);
    }
